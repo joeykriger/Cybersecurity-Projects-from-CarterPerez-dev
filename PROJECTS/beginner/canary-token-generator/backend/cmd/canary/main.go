@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/CarterPerez-dev/cybersecurity-projects/canary-token-generator/backend/internal/admin"
 	"github.com/CarterPerez-dev/cybersecurity-projects/canary-token-generator/backend/internal/config"
 	"github.com/CarterPerez-dev/cybersecurity-projects/canary-token-generator/backend/internal/core"
 	"github.com/CarterPerez-dev/cybersecurity-projects/canary-token-generator/backend/internal/event"
@@ -97,7 +98,8 @@ func run(configPath string) error {
 	tokenSvc, verifier, healthH, tokenH := buildHTTPDeps(
 		cfg, logger, db, rdb, eventRepo, tokenRepo, eventSvc,
 	)
-	srv := mountRouter(cfg, logger, rdb, healthH, tokenH, verifier)
+	adminH := admin.NewHandler(tokenRepo, eventRepo, tokenSvc, logger)
+	srv := mountRouter(cfg, logger, rdb, healthH, tokenH, adminH, verifier)
 
 	var wg sync.WaitGroup
 	spawnMySQLListener(ctx, cfg, logger, &wg, tokenSvc, eventSvc)
@@ -252,6 +254,7 @@ func mountRouter(
 	rdb *core.Redis,
 	healthH *health.Handler,
 	tokenH *token.Handler,
+	adminH *admin.Handler,
 	verifier *turnstile.Verifier,
 ) *server.Server {
 	srv := server.New(server.Config{
@@ -311,9 +314,27 @@ func mountRouter(
 			middleware.TurnstileVerify(verifier),
 		).Post("/tokens", tokenH.CreateToken)
 		tokenH.RegisterManageRoutes(api)
+		mountAdminRoutes(api, cfg, logger, adminH)
 	})
 
 	return srv
+}
+
+func mountAdminRoutes(
+	api chi.Router,
+	cfg *config.Config,
+	logger *slog.Logger,
+	adminH *admin.Handler,
+) {
+	if cfg.Operator.Token == "" {
+		logger.Warn("operator admin endpoints disabled",
+			"reason", "OPERATOR_TOKEN unset")
+		return
+	}
+	api.Route("/admin", func(adm chi.Router) {
+		adm.Use(middleware.OperatorBearer(cfg.Operator.Token))
+		adminH.Register(adm)
+	})
 }
 
 func keyByCreateMin(r *http.Request) string {
