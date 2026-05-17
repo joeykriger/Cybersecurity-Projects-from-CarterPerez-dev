@@ -98,8 +98,16 @@ func loadBody(t *testing.T, c *capture) []byte {
 func newSender(t *testing.T, opts ...webhook.Option) *webhook.Sender {
 	t.Helper()
 	return webhook.NewSender(webhook.Config{
-		ManageURL: "https://canary.example.com",
+		ManageURL:         "https://canary.example.com",
+		AllowPrivateHosts: true,
 	}, opts...)
+}
+
+func newStrictSender(t *testing.T) *webhook.Sender {
+	t.Helper()
+	return webhook.NewSender(webhook.Config{
+		ManageURL: "https://canary.example.com",
+	})
 }
 
 func TestSender_Channel(t *testing.T) {
@@ -197,8 +205,9 @@ func TestSender_Send_HMACSignatureWhenSecretSet(t *testing.T) {
 		},
 	)
 	s := webhook.NewSender(webhook.Config{
-		ManageURL:  "https://canary.example.com",
-		HMACSecret: secret,
+		ManageURL:         "https://canary.example.com",
+		HMACSecret:        secret,
+		AllowPrivateHosts: true,
 	})
 	require.NoError(
 		t,
@@ -324,6 +333,77 @@ func TestSender_Send_AbortsAfterMaxTries(t *testing.T) {
 	err := s.Send(context.Background(), sampleInfo(srv.URL), sampleEvent())
 	require.Error(t, err)
 	require.Equal(t, int32(3), attempts.Load())
+}
+
+func TestSender_Validate_BlocksPrivateHosts(t *testing.T) {
+	t.Parallel()
+	s := newStrictSender(t)
+	cases := []string{
+		"http://127.0.0.1/",
+		"http://127.0.0.1:6379/",
+		"http://10.0.0.1/",
+		"http://10.255.255.255/",
+		"http://172.16.0.1/",
+		"http://172.31.255.255/",
+		"http://192.168.1.1/",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://100.64.0.1/",
+		"http://0.0.0.0/",
+		"http://[::1]/",
+		"http://[fd00::1]/",
+		"http://[fe80::1]/",
+	}
+	for _, raw := range cases {
+		raw := raw
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			err := s.Validate(raw)
+			require.ErrorIsf(
+				t,
+				err,
+				webhook.ErrBlockedHost,
+				"expected ErrBlockedHost for %q",
+				raw,
+			)
+		})
+	}
+}
+
+func TestSender_Validate_AllowsPublicLiteralIPs(t *testing.T) {
+	t.Parallel()
+	s := newStrictSender(t)
+	cases := []string{
+		"https://8.8.8.8/",
+		"https://1.1.1.1/",
+		"http://203.0.113.45:8080/hook",
+		"https://[2001:db8::1]/",
+	}
+	for _, raw := range cases {
+		raw := raw
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			require.NoError(t, s.Validate(raw))
+		})
+	}
+}
+
+func TestSender_Send_BlocksPrivateHostByDefault(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+	t.Cleanup(srv.Close)
+
+	s := newStrictSender(t)
+	err := s.Send(context.Background(), sampleInfo(srv.URL), sampleEvent())
+	require.ErrorIs(
+		t,
+		err,
+		webhook.ErrBlockedHost,
+		"strict sender must refuse to send to loopback URL",
+	)
 }
 
 func TestSender_Send_RespectsContextCancel(t *testing.T) {

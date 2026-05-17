@@ -47,16 +47,20 @@ var (
 		"webhook: webhook URL not configured",
 	)
 	ErrInvalidWebhookURL = errors.New("webhook: invalid url")
-	ErrWebhookAPI        = errors.New("webhook: api error")
+	ErrBlockedHost       = errors.New(
+		"webhook: host resolves to a blocked address range",
+	)
+	ErrWebhookAPI = errors.New("webhook: api error")
 )
 
 type Config struct {
-	ManageURL       string
-	HMACSecret      string
-	HTTPClient      *http.Client
-	MaxTries        uint
-	MaxElapsed      time.Duration
-	InitialInterval time.Duration
+	ManageURL         string
+	HMACSecret        string
+	HTTPClient        *http.Client
+	MaxTries          uint
+	MaxElapsed        time.Duration
+	InitialInterval   time.Duration
+	AllowPrivateHosts bool
 }
 
 type Option func(*Config)
@@ -75,13 +79,18 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(c *Config) { c.HTTPClient = client }
 }
 
+func WithAllowPrivateHosts(allow bool) Option {
+	return func(c *Config) { c.AllowPrivateHosts = allow }
+}
+
 type Sender struct {
-	manageURL       string
-	hmacSecret      string
-	httpClient      *http.Client
-	maxTries        uint
-	maxElapsed      time.Duration
-	initialInterval time.Duration
+	manageURL         string
+	hmacSecret        string
+	httpClient        *http.Client
+	maxTries          uint
+	maxElapsed        time.Duration
+	initialInterval   time.Duration
+	allowPrivateHosts bool
 }
 
 func NewSender(cfg Config, opts ...Option) *Sender {
@@ -89,7 +98,7 @@ func NewSender(cfg Config, opts ...Option) *Sender {
 		o(&cfg)
 	}
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = defaultHTTPClient()
+		cfg.HTTPClient = defaultHTTPClient(cfg.AllowPrivateHosts)
 	}
 	if cfg.MaxTries == 0 {
 		cfg.MaxTries = defaultMaxTries
@@ -101,21 +110,45 @@ func NewSender(cfg Config, opts ...Option) *Sender {
 		cfg.InitialInterval = defaultInitialInterval
 	}
 	return &Sender{
-		manageURL:       strings.TrimRight(cfg.ManageURL, "/"),
-		hmacSecret:      cfg.HMACSecret,
-		httpClient:      cfg.HTTPClient,
-		maxTries:        cfg.MaxTries,
-		maxElapsed:      cfg.MaxElapsed,
-		initialInterval: cfg.InitialInterval,
+		manageURL:         strings.TrimRight(cfg.ManageURL, "/"),
+		hmacSecret:        cfg.HMACSecret,
+		httpClient:        cfg.HTTPClient,
+		maxTries:          cfg.MaxTries,
+		maxElapsed:        cfg.MaxElapsed,
+		initialInterval:   cfg.InitialInterval,
+		allowPrivateHosts: cfg.AllowPrivateHosts,
 	}
 }
 
-func defaultHTTPClient() *http.Client {
-	dialer := &net.Dialer{Timeout: defaultDialTimeout}
+func defaultHTTPClient(allowPrivateHosts bool) *http.Client {
+	base := &net.Dialer{Timeout: defaultDialTimeout}
+	dialFn := base.DialContext
+	if !allowPrivateHosts {
+		dialFn = func(
+			ctx context.Context,
+			network, addr string,
+		) (net.Conn, error) {
+			if err := preDialIPCheck(addr); err != nil {
+				return nil, err
+			}
+			conn, err := base.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			if err := postDialIPCheck(conn); err != nil {
+				if cErr := conn.Close(); cErr != nil {
+					slog.Warn("webhook: close blocked conn",
+						"error", cErr)
+				}
+				return nil, err
+			}
+			return conn, nil
+		}
+	}
 	return &http.Client{
 		Timeout: defaultOverallTimeout,
 		Transport: &http.Transport{
-			DialContext:           dialer.DialContext,
+			DialContext:           dialFn,
 			TLSHandshakeTimeout:   defaultDialTimeout,
 			ResponseHeaderTimeout: defaultOverallTimeout,
 			ExpectContinueTimeout: time.Second,
@@ -124,7 +157,37 @@ func defaultHTTPClient() *http.Client {
 	}
 }
 
+func preDialIPCheck(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("webhook: split host port: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
+	if isBlockedIP(ip) {
+		return fmt.Errorf("%w: dial blocked %s", ErrBlockedHost, ip)
+	}
+	return nil
+}
+
+func postDialIPCheck(conn net.Conn) error {
+	tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return nil
+	}
+	if isBlockedIP(tcpAddr.IP) {
+		return fmt.Errorf("%w: dial blocked %s", ErrBlockedHost, tcpAddr.IP)
+	}
+	return nil
+}
+
 func (s *Sender) Channel() string { return Channel }
+
+func (s *Sender) Validate(raw string) error {
+	return validateURL(raw, s.allowPrivateHosts)
+}
 
 func (s *Sender) Send(
 	ctx context.Context,
@@ -134,7 +197,7 @@ func (s *Sender) Send(
 	if strings.TrimSpace(info.WebhookURL) == "" {
 		return ErrChannelNotConfigured
 	}
-	if err := validateURL(info.WebhookURL); err != nil {
+	if err := validateURL(info.WebhookURL, s.allowPrivateHosts); err != nil {
 		return err
 	}
 
@@ -215,7 +278,7 @@ func (s *Sender) doRequest(
 	}
 }
 
-func validateURL(raw string) error {
+func validateURL(raw string, allowPrivateHosts bool) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("%w: parse: %w", ErrInvalidWebhookURL, err)
@@ -233,7 +296,65 @@ func validateURL(raw string) error {
 	if u.User != nil {
 		return fmt.Errorf("%w: userinfo not allowed", ErrInvalidWebhookURL)
 	}
+	if allowPrivateHosts {
+		return nil
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("%w: missing hostname", ErrInvalidWebhookURL)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("%w: %s", ErrBlockedHost, ip)
+		}
+		return nil
+	}
+	ips, lookupErr := net.LookupIP(host)
+	if lookupErr != nil {
+		return fmt.Errorf(
+			"%w: lookup %s: %w",
+			ErrInvalidWebhookURL, host, lookupErr,
+		)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("%w: no IPs for %s", ErrInvalidWebhookURL, host)
+	}
+	for _, ip := range ips {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("%w: %s -> %s", ErrBlockedHost, host, ip)
+		}
+	}
 	return nil
+}
+
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() ||
+		ip.IsUnspecified() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == 10:
+			return true
+		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
+			return true
+		case ip4[0] == 192 && ip4[1] == 168:
+			return true
+		case ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127:
+			return true
+		case ip4[0] == 169 && ip4[1] == 254:
+			return true
+		}
+		return false
+	}
+	if len(ip) == net.IPv6len && ip[0]&0xfe == 0xfc {
+		return true
+	}
+	return false
 }
 
 type envelope struct {
