@@ -8,11 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	redis_rate "github.com/go-redis/redis_rate/v10"
@@ -95,22 +94,7 @@ func (rl *RateLimiter) allow(
 }
 
 func KeyByIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		ips := strings.Split(xff, ",")
-		ip := strings.TrimSpace(ips[len(ips)-1])
-		return "ratelimit:ip:" + ip
-	}
-
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return "ratelimit:ip:" + xri
-	}
-
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		ip = r.RemoteAddr
-	}
-
-	return "ratelimit:ip:" + ip
+	return "ratelimit:ip:" + RealIP(r)
 }
 
 func setRateLimitHeaders(
@@ -161,7 +145,7 @@ func writeRateLimitExceeded(w http.ResponseWriter, res *redis_rate.Result) {
 
 type limiterEntry struct {
 	limiter    *rate.Limiter
-	lastAccess int64
+	lastAccess atomic.Int64
 }
 
 type localLimiter struct {
@@ -187,7 +171,7 @@ func (l *localLimiter) cleanup() {
 		cutoff := time.Now().Add(-entryTTL).Unix()
 		l.limiters.Range(func(key, value any) bool {
 			entry, ok := value.(*limiterEntry)
-			if ok && entry.lastAccess < cutoff {
+			if ok && entry.lastAccess.Load() < cutoff {
 				l.limiters.Delete(key)
 			}
 			return true
@@ -209,8 +193,8 @@ func (l *localLimiter) allow(
 				rate.Limit(ratePerSec),
 				limit.Burst,
 			),
-			lastAccess: now,
 		}
+		newEntry.lastAccess.Store(now)
 		entryI, _ = l.limiters.LoadOrStore(key, newEntry)
 	}
 
@@ -218,7 +202,7 @@ func (l *localLimiter) allow(
 	if !ok {
 		return nil, fmt.Errorf("invalid limiter entry type")
 	}
-	entry.lastAccess = now
+	entry.lastAccess.Store(now)
 
 	allowed := entry.limiter.Allow()
 

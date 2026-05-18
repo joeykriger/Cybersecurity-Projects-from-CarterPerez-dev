@@ -78,12 +78,13 @@ type AppConfig struct {
 }
 
 type ServerConfig struct {
-	Host            string        `koanf:"host"`
-	Port            int           `koanf:"port"`
-	ReadTimeout     time.Duration `koanf:"read_timeout"`
-	WriteTimeout    time.Duration `koanf:"write_timeout"`
-	IdleTimeout     time.Duration `koanf:"idle_timeout"`
-	ShutdownTimeout time.Duration `koanf:"shutdown_timeout"`
+	Host              string        `koanf:"host"`
+	Port              int           `koanf:"port"`
+	ReadTimeout       time.Duration `koanf:"read_timeout"`
+	WriteTimeout      time.Duration `koanf:"write_timeout"`
+	IdleTimeout       time.Duration `koanf:"idle_timeout"`
+	ShutdownTimeout   time.Duration `koanf:"shutdown_timeout"`
+	TrustedProxyCIDRs []string      `koanf:"trusted_proxy_cidrs"`
 }
 
 type DatabaseConfig struct {
@@ -208,6 +209,13 @@ func loadDefaults(k *koanf.Koanf) error {
 		"server.write_timeout":    "30s",
 		"server.idle_timeout":     "120s",
 		"server.shutdown_timeout": "15s",
+		"server.trusted_proxy_cidrs": []string{
+			"127.0.0.1/32",
+			"::1/128",
+			"10.0.0.0/8",
+			"172.16.0.0/12",
+			"192.168.0.0/16",
+		},
 
 		"database.max_open_conns":     25,
 		"database.max_idle_conns":     5,
@@ -271,7 +279,7 @@ func loadDefaults(k *koanf.Koanf) error {
 		"notify.retention_limit":     100,
 		"notify.webhook_hmac_secret": "",
 		"notify.telegram_api_base":   "https://api.telegram.org",
-		"notify.fingerprint_window":  "5m",
+		"notify.fingerprint_window":  "30s",
 
 		"operator.token": "",
 

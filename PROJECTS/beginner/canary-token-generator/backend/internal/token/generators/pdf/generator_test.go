@@ -497,13 +497,13 @@ func TestTrigger_RecordsEventWithRequestMetadata(t *testing.T) {
 				wantIP: "203.0.113.10",
 			},
 			{
-				name: "XFF rightmost wins over XRI when no CF",
+				name: "XFF leftmost wins over XRI when no CF",
 				headers: map[string]string{
 					"X-Forwarded-For": "198.51.100.1, 198.51.100.7",
 					"X-Real-IP":       "192.0.2.99",
 				},
 				remote: "127.0.0.1:9999",
-				wantIP: "198.51.100.7",
+				wantIP: "198.51.100.1",
 			},
 			{
 				name: "XFF trailing-comma falls through to last non-empty",
@@ -556,12 +556,12 @@ func TestTrigger_RecordsEventWithRequestMetadata(t *testing.T) {
 				wantIP:  "127.0.0.1",
 			},
 			{
-				name: "XFF IPv6 rightmost",
+				name: "XFF mixed IPv4+IPv6 leftmost",
 				headers: map[string]string{
 					"X-Forwarded-For": "198.51.100.1, 2001:db8::dead",
 				},
 				remote: "127.0.0.1:9999",
-				wantIP: "2001:db8::dead",
+				wantIP: "198.51.100.1",
 			},
 			{
 				name: "CF value is trimmed of whitespace",

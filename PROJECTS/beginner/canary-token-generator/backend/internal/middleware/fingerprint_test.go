@@ -41,13 +41,13 @@ func TestRealIP_Precedence(t *testing.T) {
 			"203.0.113.10",
 		},
 		{
-			"XFF rightmost no CF",
+			"XFF leftmost no CF",
 			map[string]string{
 				"X-Forwarded-For": "198.51.100.1, 198.51.100.7",
 				"X-Real-IP":       "192.0.2.99",
 			},
 			"127.0.0.1:9",
-			"198.51.100.7",
+			"198.51.100.1",
 		},
 		{
 			"XFF trailing comma falls through",
@@ -83,12 +83,12 @@ func TestRealIP_Precedence(t *testing.T) {
 		{"RemoteAddr loopback IPv6", nil, "[::1]:9", "::1"},
 		{"RemoteAddr no port fallback", nil, "127.0.0.1", "127.0.0.1"},
 		{
-			"XFF IPv6 rightmost",
+			"XFF mixed IPv4+IPv6 leftmost",
 			map[string]string{
 				"X-Forwarded-For": "198.51.100.1, 2001:db8::dead",
 			},
 			"127.0.0.1:9",
-			"2001:db8::dead",
+			"198.51.100.1",
 		},
 		{
 			"CF trimmed",
@@ -107,6 +107,34 @@ func TestRealIP_Precedence(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestRealIP_UntrustedRemoteIgnoresClientHeaders(t *testing.T) {
+	require.NoError(t, middleware.SetTrustedProxyCIDRs(
+		[]string{"127.0.0.1/32", "::1/128"},
+	))
+	t.Cleanup(middleware.ClearTrustedProxyCIDRs)
+
+	r := newRequest("198.51.100.50:443", map[string]string{
+		"CF-Connecting-IP": "evil-spoofed",
+		"X-Forwarded-For":  "evil-spoofed",
+		"X-Real-IP":        "evil-spoofed",
+	})
+	require.Equal(t, "198.51.100.50", middleware.RealIP(r),
+		"requests from outside the trusted-proxy set must ignore "+
+			"client-supplied forwarding headers (audit F5)")
+}
+
+func TestRealIP_TrustedRemoteHonorsClientHeaders(t *testing.T) {
+	require.NoError(t, middleware.SetTrustedProxyCIDRs(
+		[]string{"127.0.0.1/32"},
+	))
+	t.Cleanup(middleware.ClearTrustedProxyCIDRs)
+
+	r := newRequest("127.0.0.1:443", map[string]string{
+		"CF-Connecting-IP": "203.0.113.10",
+	})
+	require.Equal(t, "203.0.113.10", middleware.RealIP(r))
 }
 
 func TestOptionalHeader(t *testing.T) {
