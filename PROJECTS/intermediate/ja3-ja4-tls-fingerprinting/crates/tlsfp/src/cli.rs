@@ -3,6 +3,7 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -11,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 use tlsfp_core::{FingerprintEvent, PcapFileSource, Pipeline, PipelineConfig, SourceError};
 
 use crate::live::{DEFAULT_BPF_FILTER, LiveConfig, LiveSource};
+use crate::serve::{self, ServeConfig, Source};
 use tlsfp_intel::{Alert, FpKind, IntelStore, MatchReport, MatchStrength, default_db_path};
 
 /// How many alerts `intel alerts` shows when no count is given, and the floor a
@@ -111,10 +113,50 @@ pub enum Command {
     },
 
     /// Serve the web dashboard and HTTP API.
+    ///
+    /// The dashboard's live stream is fed one of three ways. With --replay it
+    /// pumps a capture file through the pipeline as a synthetic feed, paced and
+    /// optionally looping, which needs no privileges and is the simplest way to
+    /// see the dashboard alive. With --live it captures from an interface in
+    /// process, the same as `tlsfp live` but rendered in the browser. With
+    /// neither, the stream tails the database, so a separate
+    /// `tlsfp live --detect` writing to the same store surfaces here.
     Serve {
         /// Address to bind, for example 127.0.0.1:8080.
         #[arg(default_value = "127.0.0.1:8080")]
         bind: String,
+
+        /// Path to the intelligence database, defaulting to the data directory.
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Directory of built dashboard assets to serve.
+        #[arg(long, default_value = "frontend/dist")]
+        web: PathBuf,
+
+        /// Replay this capture file as the live feed.
+        #[arg(long, value_name = "PCAP")]
+        replay: Option<PathBuf>,
+
+        /// Loop the replayed capture instead of stopping at its end.
+        #[arg(long = "loop")]
+        repeat: bool,
+
+        /// Pause between replayed events, in milliseconds.
+        #[arg(long, default_value_t = 400)]
+        interval_ms: u64,
+
+        /// Capture live from this interface as the feed instead of replaying.
+        #[arg(long, value_name = "IFACE")]
+        live: Option<String>,
+
+        /// BPF filter compiled into the kernel for live capture.
+        #[arg(long, default_value = DEFAULT_BPF_FILTER)]
+        filter: String,
+
+        /// Capture only the interface's own traffic instead of promiscuous mode.
+        #[arg(long)]
+        no_promisc: bool,
     },
 
     /// Manage the local threat intelligence database.
@@ -228,9 +270,27 @@ impl Cli {
                 detect,
                 db.as_deref(),
             ),
-            Command::Serve { bind } => {
-                anyhow::bail!("dashboard on {bind} is not wired up yet")
-            }
+            Command::Serve {
+                bind,
+                db,
+                web,
+                replay,
+                repeat,
+                interval_ms,
+                live,
+                filter,
+                no_promisc,
+            } => run_serve(
+                bind,
+                db,
+                web,
+                replay,
+                repeat,
+                interval_ms,
+                live,
+                filter,
+                no_promisc,
+            ),
             Command::Intel { action } => action.run(),
         }
     }
@@ -304,6 +364,51 @@ fn run_pcap(path: &Path, json: bool, intel: bool, detect: bool, db: Option<&Path
         tracing::warn!("capture file ended mid packet; the tail was not read");
     }
     Ok(())
+}
+
+/// Builds the dashboard configuration from the command line and starts the
+/// server. The live feed is a replayed capture, a live interface, or, by
+/// default, the alerts an external sensor tails into the same database.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+fn run_serve(
+    bind: String,
+    db: Option<PathBuf>,
+    web: PathBuf,
+    replay: Option<PathBuf>,
+    repeat: bool,
+    interval_ms: u64,
+    live: Option<String>,
+    filter: String,
+    no_promisc: bool,
+) -> Result<()> {
+    if replay.is_some() && live.is_some() {
+        anyhow::bail!("choose either --replay or --live as the live feed, not both");
+    }
+    let db = resolve_db(db);
+    let source = if let Some(path) = replay {
+        if !path.exists() {
+            anyhow::bail!("replay capture {} does not exist", path.display());
+        }
+        Source::Replay {
+            path,
+            looping: repeat,
+            interval: Duration::from_millis(interval_ms),
+        }
+    } else if let Some(interface) = live {
+        Source::Live {
+            interface,
+            filter,
+            promiscuous: !no_promisc,
+        }
+    } else {
+        Source::Tail
+    };
+    serve::run(ServeConfig {
+        bind,
+        db,
+        web,
+        source,
+    })
 }
 
 /// Captures from an interface until ctrl-c and fingerprints in real time.

@@ -1,5 +1,5 @@
 // ===================
-// © AngelaMos | 2026
+// ©AngelaMos | 2026
 // routers.tsx
 // ===================
 
@@ -16,12 +16,12 @@ const routes: RouteObject[] = [
     element: <Shell />,
     children: [
       {
-        path: ROUTES.DASHBOARD,
-        lazy: () => import('@/pages/dashboard'),
+        path: ROUTES.SCOPE,
+        lazy: () => import('@/pages/scope'),
       },
       {
-        path: ROUTES.SETTINGS,
-        lazy: () => import('@/pages/settings'),
+        path: ROUTES.INTEL,
+        lazy: () => import('@/pages/intel'),
       },
     ],
   },

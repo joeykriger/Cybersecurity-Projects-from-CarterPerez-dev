@@ -1,5 +1,5 @@
 /**
- * ©AngelaMos | 2025
+ * ©AngelaMos | 2026
  * errors.ts
  */
 
@@ -63,6 +63,7 @@ export class ApiError extends Error {
 interface ApiErrorResponse {
   detail?: string | { msg: string; type: string }[]
   message?: string
+  error?: string
 }
 
 export function transformAxiosError(error: AxiosError<unknown>): ApiError {
@@ -87,6 +88,8 @@ export function transformAxiosError(error: AxiosError<unknown>): ApiError {
     }
   } else if (data?.message) {
     message = data.message
+  } else if (data?.error) {
+    message = data.error
   }
 
   const codeMap: Record<number, ApiErrorCode> = {

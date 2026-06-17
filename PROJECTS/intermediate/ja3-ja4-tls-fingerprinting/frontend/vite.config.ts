@@ -1,5 +1,5 @@
 /**
- * ©AngelaMos | 2025
+ * ©AngelaMos | 2026
  * vite.config.ts
  */
 
@@ -23,7 +23,11 @@ export default defineConfig(({ mode }) => {
 
     css: {
       preprocessorOptions: {
-        scss: {},
+        scss: {
+          // Lets every *.module.scss reach the design system with a bare
+          // `@use 'index' as *` instead of a relative climb out of its folder.
+          loadPaths: [path.resolve(__dirname, 'src/styles')],
+        },
       },
     },
 
@@ -31,10 +35,11 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       host: '0.0.0.0',
       proxy: {
+        // The API and the event stream share an origin with the dashboard, so
+        // the prefix is preserved rather than rewritten away.
         '/api': {
-          target: env.VITE_API_TARGET || 'http://localhost:8000',
+          target: env.VITE_API_TARGET || 'http://localhost:8080',
           changeOrigin: true,
-          rewrite: (p) => p.replace(/^\/api/, ''),
         },
       },
     },

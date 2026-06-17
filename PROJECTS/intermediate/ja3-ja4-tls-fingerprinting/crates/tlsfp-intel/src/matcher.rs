@@ -16,7 +16,7 @@ use rusqlite::{Connection, Params, Row, params};
 use tlsfp_core::{FingerprintEvent, StreamEvent};
 
 use super::ja4_parts;
-use super::model::{Category, FpKind, IntelHit, MatchReport, MatchStrength};
+use super::model::{CatalogEntry, Category, FpKind, IntelHit, MatchReport, MatchStrength};
 
 const SELECT: &str = "SELECT f.fp_kind, f.value, f.label, f.category, s.name, f.reference
      FROM intel_fingerprint f
@@ -74,6 +74,65 @@ pub fn event_fingerprints(event: &FingerprintEvent) -> Vec<(FpKind, String)> {
         StreamEvent::TcpSyn { ja4t } => vec![(FpKind::Ja4t, ja4t.clone())],
         StreamEvent::TcpSynAck { ja4ts } => vec![(FpKind::Ja4ts, ja4ts.clone())],
     }
+}
+
+/// Searches the stored catalogue by a free text substring against fingerprint
+/// values and labels, optionally narrowed to one kind. This is the browse path
+/// the dashboard search box and the CLI use, distinct from matching an observed
+/// value: it returns rows that contain the query, not hits scored against it.
+/// LIKE metacharacters in the query are escaped so a literal percent or
+/// underscore searches for itself rather than acting as a wildcard.
+pub fn search_catalog(
+    conn: &Connection,
+    query: &str,
+    kind: Option<FpKind>,
+    limit: i64,
+) -> anyhow::Result<Vec<CatalogEntry>> {
+    let needle = format!("%{}%", escape_like(query.trim()));
+    let select = "SELECT f.fp_kind, f.value, f.label, f.category, s.name, f.reference
+         FROM intel_fingerprint f
+         JOIN intel_source s ON s.id = f.source_id
+         WHERE (f.value LIKE ?1 ESCAPE '\\' OR f.label LIKE ?1 ESCAPE '\\')";
+    let entries = if let Some(kind) = kind {
+        let sql = format!("{select} AND f.fp_kind = ?2 ORDER BY f.label, f.value LIMIT ?3");
+        let mut statement = conn.prepare(&sql)?;
+        statement
+            .query_map(params![needle, kind.as_str(), limit], map_catalog_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        let sql = format!("{select} ORDER BY f.label, f.value LIMIT ?2");
+        let mut statement = conn.prepare(&sql)?;
+        statement
+            .query_map(params![needle, limit], map_catalog_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    Ok(entries)
+}
+
+fn map_catalog_row(row: &Row) -> rusqlite::Result<CatalogEntry> {
+    let kind: String = row.get(0)?;
+    let category: String = row.get(3)?;
+    Ok(CatalogEntry {
+        kind: FpKind::from_token(&kind).unwrap_or(FpKind::Ja3),
+        value: row.get(1)?,
+        label: row.get(2)?,
+        category: Category::from_token(&category),
+        source: row.get(4)?,
+        reference: row.get(5)?,
+    })
+}
+
+/// Escapes the LIKE metacharacters in user supplied search text so they match
+/// as literal characters. Pairs with the `ESCAPE '\'` clause in the query.
+fn escape_like(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
 }
 
 fn collect(
@@ -254,5 +313,29 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].kind, FpKind::Ja4);
         assert_eq!(reports[0].verdict, Verdict::Benign);
+    }
+
+    #[test]
+    fn search_finds_a_label_substring_case_insensitively() {
+        let store = seeded();
+        let hits = store.search("trick", None, 20).unwrap();
+        assert!(hits.iter().any(|entry| entry.label == "TrickBot"));
+    }
+
+    #[test]
+    fn search_can_narrow_to_one_kind() {
+        let store = seeded();
+        let all = store.search("", None, 10_000).unwrap();
+        let ja3_only = store.search("", Some(FpKind::Ja3), 10_000).unwrap();
+        assert!(!ja3_only.is_empty());
+        assert!(ja3_only.iter().all(|entry| entry.kind == FpKind::Ja3));
+        assert!(ja3_only.len() < all.len());
+    }
+
+    #[test]
+    fn search_escapes_like_wildcards() {
+        let store = seeded();
+        let literal_percent = store.search("%", None, 10).unwrap();
+        assert!(literal_percent.is_empty());
     }
 }

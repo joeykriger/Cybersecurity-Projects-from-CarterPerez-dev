@@ -32,7 +32,7 @@ use tlsfp_core::FingerprintEvent;
 
 pub use detect::{Alert, AlertSeverity, DetectConfig, Rule};
 pub use import::ImportSummary;
-pub use model::{Category, FpKind, IntelHit, MatchReport, MatchStrength, Verdict};
+pub use model::{CatalogEntry, Category, FpKind, IntelHit, MatchReport, MatchStrength, Verdict};
 pub use seed::{FeedLoad, SeedSummary};
 
 /// A handle to the open intelligence database.
@@ -53,6 +53,9 @@ impl IntelStore {
         let conn = Connection::open(path)
             .with_context(|| format!("opening database {}", path.display()))?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+        // The dashboard runs a read connection alongside a capture writer on this
+        // same file, so wait on a contended lock rather than failing the query.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Self::migrate(conn)
     }
 
@@ -126,6 +129,29 @@ impl IntelStore {
     /// A count of recorded alerts per rule, for the stats summary.
     pub fn alert_counts(&self) -> Result<Vec<(Rule, i64)>> {
         detect::counts_by_rule(&self.conn)
+    }
+
+    /// Searches the stored catalogue by a free text substring, optionally
+    /// narrowed to one fingerprint kind, for the dashboard search box and CLI.
+    pub fn search(
+        &self,
+        query: &str,
+        kind: Option<FpKind>,
+        limit: i64,
+    ) -> Result<Vec<CatalogEntry>> {
+        matcher::search_catalog(&self.conn, query, kind, limit)
+    }
+
+    /// The alerts recorded after `after_id`, oldest first, for a reader tailing
+    /// the store as new detections land.
+    pub fn alerts_since(&self, after_id: i64, limit: i64) -> Result<Vec<(i64, Alert)>> {
+        detect::since(&self.conn, after_id, limit)
+    }
+
+    /// The highest alert id currently stored, the starting point for a tailing
+    /// reader that wants only alerts raised after it connected.
+    pub fn latest_alert_id(&self) -> Result<i64> {
+        detect::max_id(&self.conn)
     }
 
     /// Summarises what the store holds, by feed and by category.

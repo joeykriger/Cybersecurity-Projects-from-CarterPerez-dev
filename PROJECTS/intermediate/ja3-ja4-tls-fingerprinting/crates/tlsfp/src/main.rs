@@ -3,6 +3,7 @@
 
 mod cli;
 mod live;
+mod serve;
 
 use anyhow::Result;
 use clap::Parser;

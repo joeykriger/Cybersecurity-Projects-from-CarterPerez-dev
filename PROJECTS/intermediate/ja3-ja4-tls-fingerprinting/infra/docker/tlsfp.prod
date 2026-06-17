@@ -37,10 +37,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libpcap0.8 ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home tlsfp \
-    && mkdir -p /data \
+    && mkdir -p /data /demo \
     && chown tlsfp:tlsfp /data
 
 COPY --from=builder /usr/local/bin/tlsfp /usr/local/bin/tlsfp
+
+# A vendored capture the demo command replays so the dashboard is alive on boot.
+COPY testdata/pcap/tls-alpn-h2.pcap /demo/demo.pcap
 
 USER tlsfp
 WORKDIR /data

@@ -186,6 +186,22 @@ pub struct IntelHit {
     pub strength: MatchStrength,
 }
 
+/// One stored fingerprint as returned by a catalogue search.
+///
+/// This is the browse view of the database, a row of intelligence found by a
+/// free text query, rather than a hit scored against an observed value. It
+/// carries no match strength because nothing was matched against it.
+#[derive(Debug, Clone, Serialize)]
+pub struct CatalogEntry {
+    pub kind: FpKind,
+    pub value: String,
+    pub label: String,
+    pub category: Category,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
 /// The judgement for an observed fingerprint after weighing every hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

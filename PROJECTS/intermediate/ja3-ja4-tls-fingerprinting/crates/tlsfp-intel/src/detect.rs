@@ -890,6 +890,49 @@ pub(crate) fn counts_by_rule(conn: &Connection) -> Result<Vec<(Rule, i64)>> {
     Ok(rows)
 }
 
+/// Alerts recorded after a given row id, oldest first, for a reader tailing the
+/// store as new detections land. Alert ids are assigned in insertion order, so
+/// a poller that remembers the highest id it has emitted never replays one.
+pub(crate) fn since(conn: &Connection, after_id: i64, limit: i64) -> Result<Vec<(i64, Alert)>> {
+    let mut statement = conn.prepare(
+        "SELECT id, ts, rule, severity, ip, fp_kind, fp_value, title, detail, score
+         FROM alert WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+    )?;
+    let rows = statement
+        .query_map(params![after_id, limit], |row| {
+            let id: i64 = row.get(0)?;
+            let rule: String = row.get(2)?;
+            let severity: String = row.get(3)?;
+            let fp_kind: Option<String> = row.get(5)?;
+            Ok((
+                id,
+                Alert {
+                    ts_nanos: row.get(1)?,
+                    rule: Rule::from_token(&rule),
+                    severity: AlertSeverity::from_token(&severity),
+                    ip: row.get(4)?,
+                    fp_kind: fp_kind.and_then(|token| FpKind::from_token(&token)),
+                    fp_value: row.get(6)?,
+                    title: row.get(7)?,
+                    detail: row.get(8)?,
+                    score: row.get(9)?,
+                },
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// The highest alert id currently stored, or zero when the table is empty. A
+/// tailing reader starts here so it streams only alerts raised after it began
+/// watching, not the whole history.
+pub(crate) fn max_id(conn: &Connection) -> Result<i64> {
+    let id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM alert", [], |row| {
+        row.get(0)
+    })?;
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -3,114 +3,110 @@
  * shell.tsx
  */
 
-import { Suspense } from 'react'
-import { ErrorBoundary } from 'react-error-boundary'
-import { GiCardAceClubs, GiCardJoker } from 'react-icons/gi'
-import { LuChevronLeft, LuChevronRight, LuMenu } from 'react-icons/lu'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Suspense, useEffect, useState } from 'react'
+import { ErrorBoundary, type FallbackProps } from 'react-error-boundary'
+import { NavLink, Outlet } from 'react-router-dom'
+import { cx, RegMark, Ticker } from '@/components'
 import { ROUTES } from '@/config'
-import { useUIStore } from '@/core/lib'
 import styles from './shell.module.scss'
 
-const NAV_ITEMS = [
-  { path: ROUTES.DASHBOARD, label: 'Dashboard', icon: GiCardJoker },
-  { path: ROUTES.SETTINGS, label: 'Settings', icon: GiCardAceClubs },
+const NAV = [
+  { to: ROUTES.SCOPE, label: 'scope' },
+  { to: ROUTES.INTEL, label: 'intel' },
 ]
 
-function ShellErrorFallback({ error }: { error: Error }): React.ReactElement {
+const TICKER = [
+  'ja3',
+  'ja3s',
+  'ja4',
+  'ja4s',
+  'ja4h',
+  'ja4x',
+  'ja4t',
+  'ja4ts',
+  'quic-initial decryption',
+  'passive capture only',
+  'no tshark dependency',
+  'the fingerprint outs the lie',
+  'biometric of the handshake',
+]
+
+function pad(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function Clock(): React.ReactElement {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const date = new Date(now)
   return (
-    <div className={styles.error}>
-      <h2>Something went wrong</h2>
-      <pre>{error.message}</pre>
+    <span className={styles.clock}>
+      {pad(date.getUTCHours())}:{pad(date.getUTCMinutes())}:
+      {pad(date.getUTCSeconds())} utc
+    </span>
+  )
+}
+
+function ShellError({ error }: FallbackProps): React.ReactElement {
+  const message = error instanceof Error ? error.message : String(error)
+  return (
+    <div className={styles.crash}>
+      <span className={styles.crashTag}>signal lost</span>
+      <pre className={styles.crashMsg}>{message}</pre>
     </div>
   )
 }
 
 function ShellLoading(): React.ReactElement {
-  return <div className={styles.loading}>Loading...</div>
-}
-
-function getPageTitle(pathname: string): string {
-  const item = NAV_ITEMS.find((i) => i.path === pathname)
-  return item?.label ?? 'Dashboard'
+  return <div className={styles.loading}>acquiring</div>
 }
 
 export function Shell(): React.ReactElement {
-  const location = useLocation()
-  const { sidebarOpen, sidebarCollapsed, toggleSidebar, toggleSidebarCollapsed } =
-    useUIStore()
-
-  const pageTitle = getPageTitle(location.pathname)
-
   return (
     <div className={styles.shell}>
-      <aside
-        className={`${styles.sidebar} ${sidebarOpen ? styles.open : ''} ${sidebarCollapsed ? styles.collapsed : ''}`}
-      >
-        <div className={styles.sidebarHeader}>
-          <span className={styles.logo}>NavBar Template</span>
-          <button
-            type="button"
-            className={styles.collapseBtn}
-            onClick={toggleSidebarCollapsed}
-            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            {sidebarCollapsed ? <LuChevronRight /> : <LuChevronLeft />}
-          </button>
+      <header className={styles.top}>
+        <div className={styles.brand}>
+          <RegMark className={styles.reg} />
+          <NavLink to={ROUTES.HOME} className={styles.mark}>
+            TLSFP
+          </NavLink>
+          <span className={styles.tagline}>passive tls surveillance</span>
         </div>
 
         <nav className={styles.nav}>
-          {NAV_ITEMS.map((item) => (
+          {NAV.map((item) => (
             <NavLink
-              key={item.path}
-              to={item.path}
+              key={item.to}
+              to={item.to}
               className={({ isActive }) =>
-                `${styles.navItem} ${isActive ? styles.active : ''}`
+                cx(styles.tab, isActive && styles.tabOn)
               }
-              onClick={() => sidebarOpen && toggleSidebar()}
             >
-              <item.icon className={styles.navIcon} />
-              <span className={styles.navLabel}>{item.label}</span>
+              {item.label}
             </NavLink>
           ))}
         </nav>
-      </aside>
 
-      {sidebarOpen && (
-        <button
-          type="button"
-          className={styles.overlay}
-          onClick={toggleSidebar}
-          onKeyDown={(e) => e.key === 'Escape' && toggleSidebar()}
-          aria-label="Close sidebar"
-        />
-      )}
+        <div className={styles.status}>
+          <span className={styles.coord}>37.7749n / 122.4194w</span>
+          <Clock />
+        </div>
+      </header>
 
-      <div
-        className={`${styles.main} ${sidebarCollapsed ? styles.collapsed : ''}`}
-      >
-        <header className={styles.header}>
-          <div className={styles.headerLeft}>
-            <button
-              type="button"
-              className={styles.menuBtn}
-              onClick={toggleSidebar}
-              aria-label="Toggle menu"
-            >
-              <LuMenu />
-            </button>
-            <h1 className={styles.pageTitle}>{pageTitle}</h1>
-          </div>
-        </header>
+      <main className={styles.main}>
+        <ErrorBoundary FallbackComponent={ShellError}>
+          <Suspense fallback={<ShellLoading />}>
+            <Outlet />
+          </Suspense>
+        </ErrorBoundary>
+      </main>
 
-        <main className={styles.content}>
-          <ErrorBoundary FallbackComponent={ShellErrorFallback}>
-            <Suspense fallback={<ShellLoading />}>
-              <Outlet />
-            </Suspense>
-          </ErrorBoundary>
-        </main>
-      </div>
+      <footer className={styles.foot}>
+        <Ticker items={TICKER} />
+      </footer>
     </div>
   )
 }
